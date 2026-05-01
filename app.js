@@ -1,5 +1,35 @@
 // app.js — Wiki-карта. Базовая надёжность + слой фото + машина времени.
 
+// === Диагностика: показываем ошибки прямо на экране ===
+window.addEventListener('error', (e) => {
+  const el = document.getElementById('status');
+  if (el) {
+    el.textContent = 'JS: ' + (e.message || 'unknown');
+    el.classList.remove('hidden');
+    el.style.background = 'rgba(200,40,40,0.9)';
+  }
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const el = document.getElementById('status');
+  if (el) {
+    el.textContent = 'Promise: ' + (e.reason?.message || e.reason || 'unknown');
+    el.classList.remove('hidden');
+    el.style.background = 'rgba(200,40,40,0.9)';
+  }
+});
+
+// === Сброс старого Service Worker и кэшей (на время отладки) ===
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations()
+    .then((regs) => regs.forEach((r) => r.unregister()))
+    .catch(() => {});
+}
+if ('caches' in window) {
+  caches.keys()
+    .then((keys) => keys.forEach((k) => caches.delete(k)))
+    .catch(() => {});
+}
+
 (() => {
   // ============================================================
   // Constants
@@ -72,7 +102,8 @@
   // ============================================================
   // Map setup
   // ============================================================
-  const map = L.map('map', { zoomControl: false, tap: true, doubleClickZoom: true })
+  // tap: false фиксит баг iOS Safari — без этого попапы маркеров не открываются на тач-экране
+  const map = L.map('map', { zoomControl: false, tap: false, doubleClickZoom: true })
     .setView(DEFAULT_CENTER, DEFAULT_ZOOM);
 
   L.control.zoom({ position: 'bottomright' }).addTo(map);
@@ -154,6 +185,63 @@
     String(s ?? '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
 
   // ============================================================
+  // Coordinates block — координаты + кнопка "Скопировать"
+  // ============================================================
+  function coordsBlock(lat, lon) {
+    const txt = `${Number(lat).toFixed(6)}, ${Number(lon).toFixed(6)}`;
+    return `<div class="coords">
+      <span class="coord-text">📍 ${txt}</span>
+      <button type="button" class="copy-btn" data-coords="${txt}">📋 Скопировать</button>
+    </div>`;
+  }
+
+  function attachCopyHandler(marker) {
+    marker.on('popupopen', (e) => {
+      const popupEl = e.popup.getElement();
+      if (!popupEl) return;
+      const btn = popupEl.querySelector('.copy-btn');
+      if (!btn || btn.dataset.bound) return;
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        const coords = btn.dataset.coords;
+        let ok = false;
+        try {
+          await navigator.clipboard.writeText(coords);
+          ok = true;
+        } catch {
+          // Fallback для iOS Safari в не-secure контексте или старых версий
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = coords;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            ok = document.execCommand('copy');
+            ta.remove();
+          } catch {}
+        }
+        btn.textContent = ok ? '✓ Скопировано' : '✗ Не удалось';
+        setTimeout(() => { btn.textContent = '📋 Скопировать'; }, 1500);
+      });
+    });
+  }
+
+  // ============================================================
+  // Защита от переполнения: если маркеров слишком много, чистим
+  // ============================================================
+  const MAX_MARKERS = 400;
+  function guardOverflow(cluster, seenSet, label) {
+    if (seenSet.size > MAX_MARKERS) {
+      cluster.clearLayers();
+      seenSet.clear();
+      showStatus(`Очистил ${label} (накопилось ${MAX_MARKERS}+)`);
+    }
+  }
+
+  // ============================================================
   // Wikipedia: load articles in current map bbox
   // ============================================================
   let wikiAbort = null;
@@ -171,6 +259,8 @@
       showStatus('Слишком большая область — приблизьте');
       return;
     }
+
+    guardOverflow(wikiCluster, seenWiki, 'места');
 
     if (wikiAbort) wikiAbort.abort();
     wikiAbort = new AbortController();
@@ -206,8 +296,9 @@
   function addWikiMarker(place) {
     const marker = L.marker([place.lat, place.lon]);
     const titleHtml = escapeHtml(place.title);
+    const coords = coordsBlock(place.lat, place.lon);
     marker.bindPopup(
-      `<div class="popup"><h3>${titleHtml}</h3><p class="skeleton">Загружаю…</p></div>`,
+      `<div class="popup"><h3>${titleHtml}</h3>${coords}<p class="skeleton">Загружаю…</p></div>`,
       { maxWidth: 280 }
     );
     let loaded = false;
@@ -225,15 +316,16 @@
           ? `<a href="${escapeHtml(d.content_urls.desktop.page)}" target="_blank" rel="noopener">Открыть в Википедии →</a>`
           : '';
         marker.setPopupContent(
-          `<div class="popup">${img}<h3>${titleHtml}</h3>${extract}${link}</div>`
+          `<div class="popup">${img}<h3>${titleHtml}</h3>${extract}${coords}${link}</div>`
         );
         loaded = true;
       } catch {
         marker.setPopupContent(
-          `<div class="popup"><h3>${titleHtml}</h3><p>Не удалось загрузить.</p></div>`
+          `<div class="popup"><h3>${titleHtml}</h3>${coords}<p>Не удалось загрузить.</p></div>`
         );
       }
     });
+    attachCopyHandler(marker);
     wikiCluster.addLayer(marker);
   }
 
@@ -243,6 +335,7 @@
   let photosAbort = null;
 
   async function loadPhotos() {
+    guardOverflow(photosCluster, seenPhotos, 'фото');
     if (photosAbort) photosAbort.abort();
     photosAbort = new AbortController();
 
@@ -282,8 +375,9 @@
     });
     const marker = L.marker([file.lat, file.lon], { icon });
     const titleHtml = escapeHtml(file.title.replace(/^File:/, ''));
+    const coords = coordsBlock(file.lat, file.lon);
     marker.bindPopup(
-      `<div class="popup"><h3>${titleHtml}</h3><p class="skeleton">Загружаю фото…</p></div>`,
+      `<div class="popup"><h3>${titleHtml}</h3>${coords}<p class="skeleton">Загружаю фото…</p></div>`,
       { maxWidth: 300 }
     );
     let loaded = false;
@@ -318,17 +412,18 @@
               <img src="${escapeHtml(imgUrl)}" alt="" loading="lazy">
             </a>
             <h3>${titleHtml}</h3>
-            ${meta_lines}
+            ${meta_lines}${coords}
             <a href="${escapeHtml(info.descriptionurl)}" target="_blank" rel="noopener">Открыть в Commons →</a>
           </div>`
         );
         loaded = true;
       } catch {
         marker.setPopupContent(
-          `<div class="popup"><h3>${titleHtml}</h3><p>Не удалось загрузить фото.</p></div>`
+          `<div class="popup"><h3>${titleHtml}</h3>${coords}<p>Не удалось загрузить фото.</p></div>`
         );
       }
     });
+    attachCopyHandler(marker);
     photosCluster.addLayer(marker);
   }
 
@@ -427,14 +522,17 @@
       : '';
     const qid = obj.id.split('/').pop();
     const wdUrl = `https://www.wikidata.org/wiki/${qid}`;
+    const coords = coordsBlock(obj.lat, obj.lon);
     marker.bindPopup(
       `<div class="popup">
         ${imgHtml}<h3>${titleHtml}</h3>
         <p class="meta">📅 ${obj.year} год</p>
+        ${coords}
         <a href="${wdUrl}" target="_blank" rel="noopener">Открыть в Wikidata →</a>
       </div>`,
       { maxWidth: 280 }
     );
+    attachCopyHandler(marker);
     timeCluster.addLayer(marker);
   }
 
@@ -579,15 +677,9 @@
   timeToLabel.textContent = fmtYear(timeToInput.value);
 
   // ============================================================
-  // PWA Service Worker
+  // PWA Service Worker — отключён на время отладки.
+  // Включим обратно, когда поймём что всё работает на iPhone.
   // ============================================================
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js').catch((err) => {
-        console.warn('SW registration failed:', err);
-      });
-    });
-  }
 
   // ============================================================
   // Initial load

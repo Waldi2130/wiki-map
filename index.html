@@ -191,6 +191,39 @@
     margin-top: 4px;
   }
   .popup .skeleton { color: #888; font-style: italic; }
+
+  /* --- Координаты в попапе + кнопка копирования --- */
+  .coords {
+    background: #f5f5f7;
+    border-radius: 8px;
+    padding: 6px 10px;
+    margin: 8px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .coord-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: #222;
+    user-select: all;
+    -webkit-user-select: all;
+  }
+  .copy-btn {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: 500;
+    -webkit-tap-highlight-color: transparent;
+    white-space: nowrap;
+  }
+  .copy-btn:active { transform: scale(0.95); }
 </style>
 </head>
 <body>
@@ -222,6 +255,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
